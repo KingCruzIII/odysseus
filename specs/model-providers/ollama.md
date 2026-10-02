@@ -32,7 +32,12 @@ Native chat uses `/api/chat`, `messages`, optional OpenAI-shaped tool
 definitions, `format`, `options`, and model-dependent `think`. Responses use
 `message.content`, `message.thinking`, and `message.tool_calls`. Generate uses
 top-level `response` and `thinking`. OpenAI compatibility is a separate dialect
-and can change control names independently.
+and can change control names independently. `llm_core._build_ollama_payload` only
+emits `options.num_ctx` when `src.model_context.get_context_length` returned a
+trusted (non-default) value, so Ollama server defaults (VRAM-based 4k/32k/256k)
+stand for any model odysseus can't positively size — fixable server-side via
+`OLLAMA_CONTEXT_LENGTH`/a Modelfile `num_ctx`, or per-model from Settings >
+Models' context override field (see `specs/llm-models.md`).
 
 Manual Ollama endpoints registered against the OpenAI-compatible `/v1` surface default to text/prompted tools unless the operator explicitly enables `supports_tools`; model naming alone does not opt that dialect into native function schemas.
 

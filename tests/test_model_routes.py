@@ -1072,6 +1072,101 @@ def test_patch_api_hidden_empty_pins_all_cached_models(monkeypatch):
     assert ep.hidden_models is None
 
 
+def test_patch_models_saves_context_override(monkeypatch):
+    ep = _make_endpoint()
+    db = _PinnedFakeDb([ep])
+    monkeypatch.setattr(model_routes, "SessionLocal", lambda: db)
+    monkeypatch.setattr(model_routes, "require_admin", lambda request: None)
+    endpoint = _get_route("/api/model-endpoints/{ep_id}/models", "PATCH")
+
+    request = _PinnedFakeRequest(body={"context_overrides": {"qwen3:14b": 32768}})
+    result = asyncio.run(endpoint("ep1", request))
+
+    assert json.loads(ep.context_overrides) == {"qwen3:14b": 32768}
+    assert result["context_overrides"] == {"qwen3:14b": 32768}
+
+
+def test_patch_models_context_override_merges_without_clobbering_others(monkeypatch):
+    ep = _make_endpoint(context_overrides=json.dumps({"existing-model": 8192}))
+    db = _PinnedFakeDb([ep])
+    monkeypatch.setattr(model_routes, "SessionLocal", lambda: db)
+    monkeypatch.setattr(model_routes, "require_admin", lambda request: None)
+    endpoint = _get_route("/api/model-endpoints/{ep_id}/models", "PATCH")
+
+    request = _PinnedFakeRequest(body={"context_overrides": {"new-model": 65536}})
+    asyncio.run(endpoint("ep1", request))
+
+    assert json.loads(ep.context_overrides) == {"existing-model": 8192, "new-model": 65536}
+
+
+def test_patch_models_context_override_null_clears_it(monkeypatch):
+    ep = _make_endpoint(context_overrides=json.dumps({"model-a": 8192, "model-b": 16384}))
+    db = _PinnedFakeDb([ep])
+    monkeypatch.setattr(model_routes, "SessionLocal", lambda: db)
+    monkeypatch.setattr(model_routes, "require_admin", lambda request: None)
+    endpoint = _get_route("/api/model-endpoints/{ep_id}/models", "PATCH")
+
+    request = _PinnedFakeRequest(body={"context_overrides": {"model-a": None}})
+    asyncio.run(endpoint("ep1", request))
+
+    assert json.loads(ep.context_overrides) == {"model-b": 16384}
+
+
+def test_patch_models_context_override_clearing_last_entry_nulls_column(monkeypatch):
+    ep = _make_endpoint(context_overrides=json.dumps({"only-model": 8192}))
+    db = _PinnedFakeDb([ep])
+    monkeypatch.setattr(model_routes, "SessionLocal", lambda: db)
+    monkeypatch.setattr(model_routes, "require_admin", lambda request: None)
+    endpoint = _get_route("/api/model-endpoints/{ep_id}/models", "PATCH")
+
+    asyncio.run(endpoint("ep1", _PinnedFakeRequest(body={"context_overrides": {"only-model": None}})))
+
+    assert ep.context_overrides is None
+
+
+def test_patch_models_context_override_rejects_non_dict(monkeypatch):
+    ep = _make_endpoint()
+    db = _PinnedFakeDb([ep])
+    monkeypatch.setattr(model_routes, "SessionLocal", lambda: db)
+    monkeypatch.setattr(model_routes, "require_admin", lambda request: None)
+    endpoint = _get_route("/api/model-endpoints/{ep_id}/models", "PATCH")
+
+    with pytest.raises(HTTPException):
+        asyncio.run(endpoint("ep1", _PinnedFakeRequest(body={"context_overrides": ["nope"]})))
+
+
+def test_patch_models_context_override_clamps_out_of_range(monkeypatch):
+    # Mirrors _parse_positive_int's existing clamp-to-max behavior (used the
+    # same way for model_refresh_interval/model_refresh_timeout) rather than
+    # rejecting an overly large value outright.
+    ep = _make_endpoint()
+    db = _PinnedFakeDb([ep])
+    monkeypatch.setattr(model_routes, "SessionLocal", lambda: db)
+    monkeypatch.setattr(model_routes, "require_admin", lambda request: None)
+    endpoint = _get_route("/api/model-endpoints/{ep_id}/models", "PATCH")
+
+    asyncio.run(endpoint("ep1", _PinnedFakeRequest(body={"context_overrides": {"m": 99999999}})))
+
+    assert json.loads(ep.context_overrides) == {"m": model_routes._CONTEXT_OVERRIDE_MAX}
+
+
+def test_get_models_includes_context_override(monkeypatch):
+    ep = _make_endpoint(
+        cached_models=json.dumps(["m1", "m2"]),
+        context_overrides=json.dumps({"m1": 32768}),
+    )
+    db = _PinnedFakeDb([ep])
+    monkeypatch.setattr(model_routes, "SessionLocal", lambda: db)
+    monkeypatch.setattr(model_routes, "require_admin", lambda request: None)
+    endpoint = _get_route("/api/model-endpoints/{ep_id}/models", "GET")
+
+    result = endpoint("ep1", _PinnedFakeRequest(), SimpleNamespace(headers={}))
+
+    by_id = {row["id"]: row for row in result}
+    assert by_id["m1"]["context_override"] == 32768
+    assert by_id["m2"]["context_override"] is None
+
+
 def test_get_models_returns_pinned_when_probe_empty(monkeypatch):
     ep = _make_endpoint(pinned_models=json.dumps(["deploy-1"]))
     db = _PinnedFakeDb([ep])

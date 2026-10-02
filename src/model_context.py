@@ -87,6 +87,56 @@ def _configured_endpoint_kind(url: str) -> Optional[str]:
         return None
 
 
+def _configured_context_override(endpoint_url: str, model: str) -> Optional[int]:
+    """Admin-set per-model ``num_ctx`` override stored on the matching
+    ModelEndpoint row (see Settings > Models). Checked ahead of discovery and
+    the known-models table so it always wins, and so changing it in the UI
+    takes effect on the very next request without any cache invalidation."""
+    target = _normalize_base_for_compare(endpoint_url)
+    if not target:
+        return None
+    if "core.database" not in sys.modules:
+        return None
+    try:
+        import json as _json
+        from core.database import SessionLocal, ModelEndpoint
+        db = SessionLocal()
+        try:
+            rows = db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True).all()
+            for ep in rows:
+                base = _normalize_base_for_compare(getattr(ep, "base_url", "") or "")
+                if not base:
+                    continue
+                if target != base and not target.startswith(base + "/"):
+                    continue
+                raw = getattr(ep, "context_overrides", None)
+                if not raw:
+                    continue
+                try:
+                    overrides = _json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(overrides, dict):
+                    continue
+                value = overrides.get(model)
+                if value is None:
+                    # Catalog ids may carry a provider prefix (e.g. "openai/gpt-4o")
+                    # while the session stores the bare id; match the trailing
+                    # segment too so the override still applies either way.
+                    base_model = model.split("/")[-1]
+                    for key, val in overrides.items():
+                        if key.split("/")[-1] == base_model:
+                            value = val
+                            break
+                if isinstance(value, (int, float)) and value > 0:
+                    return int(value)
+            return None
+        finally:
+            db.close()
+    except Exception:
+        return None
+
+
 def is_local_endpoint(url: str) -> bool:
     """Check if URL points to a local/private/tailscale address."""
     kind = _configured_endpoint_kind(url)
@@ -241,6 +291,10 @@ _context_cache: Dict[Tuple[str, str], Tuple[int, bool]] = {}
 def _get_context_length_cached(endpoint_url: str, model: str) -> Tuple[int, bool]:
     """Return (context_length, known). ``known`` is False only when the value is a
     bare DEFAULT_CONTEXT fallback (no endpoint report and not in the known table)."""
+    override = _configured_context_override(endpoint_url, model)
+    if override:
+        return override, True
+
     configured_kind = _configured_endpoint_kind(endpoint_url)
     is_local = is_local_endpoint(endpoint_url)
     # Key on (endpoint_url, model): the same model id can be served by two

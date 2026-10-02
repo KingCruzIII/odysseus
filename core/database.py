@@ -538,6 +538,11 @@ class ModelEndpoint(TimestampMixin, Base):
     model_refresh_mode = Column(String, nullable=True, default="auto")
     model_refresh_interval = Column(Integer, nullable=True, default=None)
     model_refresh_timeout = Column(Integer, nullable=True, default=None)
+    # JSON dict of {model_id: num_ctx} manual per-model context-window overrides.
+    # Lets an admin force the context size (e.g. Ollama's num_ctx) for a specific
+    # model instead of relying on auto-discovery / the known-models table, which
+    # can't see server-side defaults like Ollama's VRAM-based 4k/32k/256k picks.
+    context_overrides = Column(Text, nullable=True)
     # Whether models on this endpoint accept OpenAI-style function
     # schemas + emit `tool_calls`. Auto-detected at Cookbook auto-
     # register time from `--enable-auto-tool-choice` in the serve cmd;
@@ -1103,6 +1108,8 @@ def _migrate_add_model_endpoint_refresh_columns():
             conn.execute("ALTER TABLE model_endpoints ADD COLUMN model_refresh_interval INTEGER")
         if columns and "model_refresh_timeout" not in columns:
             conn.execute("ALTER TABLE model_endpoints ADD COLUMN model_refresh_timeout INTEGER")
+        if columns and "context_overrides" not in columns:
+            conn.execute("ALTER TABLE model_endpoints ADD COLUMN context_overrides TEXT")
         conn.commit()
     except Exception as e:
         logging.getLogger(__name__).warning(f"model_endpoints refresh-policy migration failed: {e}")

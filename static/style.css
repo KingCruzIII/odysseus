@@ -15250,6 +15250,24 @@ body:has(.doc-version-panel:not(.hidden)) .hamburger-btn {
 .adm-cb-hidden:checked + .adm-check-dot::after {
   transform: translate(-50%, -50%) rotate(-45deg) scale(1);
 }
+/* Per-model num_ctx override field on each Models row. Fixed-width so a
+   7-figure context value doesn't reflow the row; the shared label's
+   `flex: 1` on the display-name span keeps this pinned to the right. */
+.adm-ctx-input {
+  flex: 0 0 56px !important;
+  width: 56px;
+  font-size: 10px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--fg) 20%, transparent);
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  color: var(--fg);
+  text-align: right;
+}
+.adm-ctx-input:focus {
+  outline: none;
+  border-color: var(--accent, var(--red));
+}
 /* Disabled endpoints — dim the row but keep the toggle/delete buttons
    at full opacity so the user can re-enable or remove without squinting. */
 .admin-user-row.admin-ep-disabled { opacity: 0.55; }

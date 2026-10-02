@@ -720,6 +720,7 @@ async function loadEndpoints() {
                 <input type="checkbox" class="adm-cb-hidden" data-ep-model-id="${esc(m.id)}" ${(usesPinnedPicker ? m.is_pinned : !m.is_hidden) ? 'checked' : ''}>
                 <span class="adm-check-dot" aria-hidden="true"></span>
                 <span>${esc(m.display)}</span>
+                <input type="number" min="1" step="1" class="adm-ctx-input" data-ep-model-ctx="${esc(m.id)}" placeholder="ctx" title="Override context length (num_ctx) for this model — blank uses auto-detection" value="${m.context_override ? Number(m.context_override) : ''}">
               </label>`
             ).join('') + '</div>';
             const filterRows = (q) => {
@@ -746,6 +747,15 @@ async function loadEndpoints() {
             });
             panel.querySelectorAll('input[type=checkbox]').forEach(cb => {
               cb.addEventListener('change', () => _saveEpModelState(epId, panel));
+            });
+            panel.querySelectorAll('[data-ep-model-ctx]').forEach(inp => {
+              // Clicking/typing in the number input must not toggle the row's
+              // checkbox (both live inside the same <label>).
+              inp.addEventListener('click', (e) => e.stopPropagation());
+              inp.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') inp.blur();
+              });
+              inp.addEventListener('change', () => _saveModelContextOverride(epId, inp));
             });
           };
           try {
@@ -796,6 +806,29 @@ async function _saveEpModelState(epId, panel) {
     }
     _refreshAfterEndpointChange();
   } catch (e) { /* silent */ }
+}
+
+async function _saveModelContextOverride(epId, inputEl) {
+  const modelId = inputEl.dataset.epModelCtx;
+  const raw = inputEl.value.trim();
+  // Empty clears the override (falls back to auto-detection); otherwise send
+  // the parsed integer so a stray "32,768"-style paste still saves cleanly.
+  const value = raw === '' ? null : parseInt(raw.replace(/[^\d]/g, ''), 10) || null;
+  inputEl.value = value || '';
+  try {
+    const res = await fetch(`/api/model-endpoints/${epId}/models`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ context_overrides: { [modelId]: value } }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (uiModule?.showToast) {
+      uiModule.showToast(value ? `Context override set to ${value.toLocaleString()}` : 'Context override cleared', 2500);
+    }
+  } catch (e) {
+    if (uiModule?.showToast) uiModule.showToast('Failed to save context override', 4000);
+  }
 }
 
 function initEndpointForm() {

@@ -312,3 +312,96 @@ class TestGetContextLength:
 
         endpoint = "http://100.117.136.97:34521/v1/chat/completions"
         assert model_context.get_context_length(endpoint, "unknown-proxy-model") == model_context.DEFAULT_CONTEXT
+
+
+class TestConfiguredContextOverride:
+    """Admin-set per-model num_ctx override (Settings > Models) must win over
+    discovery, the known-models table, and the cache — and apply immediately."""
+
+    def setup_method(self):
+        model_context._context_cache.clear()
+        model_context._catalog_ctx_cache.clear()
+
+    def _install_ollama_endpoint(self, monkeypatch, overrides):
+        import json
+        _install_endpoint_db(monkeypatch, [
+            types.SimpleNamespace(
+                base_url="http://localhost:11434",
+                endpoint_kind="local",
+                api_key=None,
+                is_enabled=True,
+                context_overrides=json.dumps(overrides) if overrides else None,
+            )
+        ])
+
+    def test_override_wins_over_known_table(self, monkeypatch):
+        # "gpt-4o" would normally resolve to 128000 from the known table; an
+        # explicit override must take priority.
+        self._install_ollama_endpoint(monkeypatch, {"gpt-4o": 32768})
+        endpoint = "http://localhost:11434/v1/chat/completions"
+        assert model_context.get_context_length(endpoint, "gpt-4o") == 32768
+        assert model_context.get_context_length_known(endpoint, "gpt-4o") == (32768, True)
+
+    def test_override_wins_over_live_query(self, monkeypatch):
+        def fake_query(endpoint_url, model):
+            raise AssertionError("discovery must be skipped when an override is set")
+
+        monkeypatch.setattr(model_context, "_query_context_length", fake_query)
+        self._install_ollama_endpoint(monkeypatch, {"qwen3:14b": 65536})
+        endpoint = "http://localhost:11434/v1/chat/completions"
+        assert model_context.get_context_length(endpoint, "qwen3:14b") == 65536
+
+    def test_no_override_falls_back_to_normal_lookup(self, monkeypatch):
+        self._install_ollama_endpoint(monkeypatch, {"qwen3:14b": 65536})
+
+        def fake_query(endpoint_url, model):
+            return (131072, True)
+
+        monkeypatch.setattr(model_context, "_query_context_length", fake_query)
+        endpoint = "http://localhost:11434/v1/chat/completions"
+        # A model without an override still resolves via the normal path.
+        assert model_context.get_context_length(endpoint, "llama-3.1") == 131072
+
+    def test_override_matches_prefixed_catalog_id(self, monkeypatch):
+        # Overrides keyed on the bare model id still apply when the caller's
+        # id carries a provider prefix (or vice versa).
+        self._install_ollama_endpoint(monkeypatch, {"some/qwen3:14b": 16384})
+        endpoint = "http://localhost:11434/v1/chat/completions"
+        assert model_context.get_context_length(endpoint, "qwen3:14b") == 16384
+
+    def test_override_takes_effect_immediately_no_cache(self, monkeypatch):
+        # Changing the override must apply on the very next call, without
+        # needing to invalidate any cache.
+        endpoint = "http://localhost:11434/v1/chat/completions"
+        self._install_ollama_endpoint(monkeypatch, {"devstral:24b": 32768})
+        assert model_context.get_context_length(endpoint, "devstral:24b") == 32768
+        self._install_ollama_endpoint(monkeypatch, {"devstral:24b": 8192})
+        assert model_context.get_context_length(endpoint, "devstral:24b") == 8192
+
+    def test_zero_or_missing_override_is_ignored(self, monkeypatch):
+        self._install_ollama_endpoint(monkeypatch, {"some-model": 0})
+
+        def fake_query(endpoint_url, model):
+            return (model_context.DEFAULT_CONTEXT, False)
+
+        monkeypatch.setattr(model_context, "_query_context_length", fake_query)
+        endpoint = "http://localhost:11434/v1/chat/completions"
+        assert model_context.get_context_length(endpoint, "some-model") == model_context.DEFAULT_CONTEXT
+
+    def test_malformed_overrides_json_is_ignored(self, monkeypatch):
+        _install_endpoint_db(monkeypatch, [
+            types.SimpleNamespace(
+                base_url="http://localhost:11434",
+                endpoint_kind="local",
+                api_key=None,
+                is_enabled=True,
+                context_overrides="not valid json",
+            )
+        ])
+
+        def fake_query(endpoint_url, model):
+            return (model_context.DEFAULT_CONTEXT, False)
+
+        monkeypatch.setattr(model_context, "_query_context_length", fake_query)
+        endpoint = "http://localhost:11434/v1/chat/completions"
+        assert model_context.get_context_length(endpoint, "some-model") == model_context.DEFAULT_CONTEXT
