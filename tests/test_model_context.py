@@ -323,14 +323,18 @@ class TestConfiguredContextOverride:
         model_context._catalog_ctx_cache.clear()
 
     def _install_ollama_endpoint(self, monkeypatch, overrides):
+        # Convenience wrapper: tests pass the flat {model_id: num_ctx} shape;
+        # the DB column actually stores the generic nested
+        # {model_id: {field: value}} shape.
         import json
+        nested = {k: {"num_ctx": v} for k, v in (overrides or {}).items()}
         _install_endpoint_db(monkeypatch, [
             types.SimpleNamespace(
                 base_url="http://localhost:11434",
                 endpoint_kind="local",
                 api_key=None,
                 is_enabled=True,
-                context_overrides=json.dumps(overrides) if overrides else None,
+                model_overrides=json.dumps(nested) if nested else None,
             )
         ])
 
@@ -395,7 +399,7 @@ class TestConfiguredContextOverride:
                 endpoint_kind="local",
                 api_key=None,
                 is_enabled=True,
-                context_overrides="not valid json",
+                model_overrides="not valid json",
             )
         ])
 
@@ -405,3 +409,22 @@ class TestConfiguredContextOverride:
         monkeypatch.setattr(model_context, "_query_context_length", fake_query)
         endpoint = "http://localhost:11434/v1/chat/completions"
         assert model_context.get_context_length(endpoint, "some-model") == model_context.DEFAULT_CONTEXT
+
+    def test_generic_lookup_reads_arbitrary_field(self, monkeypatch):
+        # Locks in that _configured_model_override is a generic {field: value}
+        # reader, not hardcoded to num_ctx — future override fields (e.g.
+        # supports_tools, keep_alive) reuse this same lookup unmodified.
+        import json
+        _install_endpoint_db(monkeypatch, [
+            types.SimpleNamespace(
+                base_url="http://localhost:11434",
+                endpoint_kind="local",
+                api_key=None,
+                is_enabled=True,
+                model_overrides=json.dumps({"some-model": {"num_ctx": 8192, "keep_alive": "30m"}}),
+            )
+        ])
+        endpoint = "http://localhost:11434/v1/chat/completions"
+        assert model_context._configured_model_override(endpoint, "some-model", "keep_alive") == "30m"
+        assert model_context._configured_model_override(endpoint, "some-model", "num_ctx") == 8192
+        assert model_context._configured_model_override(endpoint, "some-model", "nonexistent_field") is None

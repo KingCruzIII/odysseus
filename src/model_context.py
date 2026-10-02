@@ -8,7 +8,7 @@ Provides token estimation for context usage tracking.
 import ipaddress
 import logging
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from urllib.parse import urlparse
 
@@ -87,11 +87,16 @@ def _configured_endpoint_kind(url: str) -> Optional[str]:
         return None
 
 
-def _configured_context_override(endpoint_url: str, model: str) -> Optional[int]:
-    """Admin-set per-model ``num_ctx`` override stored on the matching
-    ModelEndpoint row (see Settings > Models). Checked ahead of discovery and
-    the known-models table so it always wins, and so changing it in the UI
-    takes effect on the very next request without any cache invalidation."""
+def _configured_model_override(endpoint_url: str, model: str, field: str) -> Optional[Any]:
+    """Admin-set per-model override field, read from the generic
+    ``{model_id: {field: value}}`` blob in ``ModelEndpoint.model_overrides``
+    (see Settings > Added Models). Checked ahead of discovery and the
+    known-models table so it always wins, and so changing it in the UI takes
+    effect on the very next request without any cache invalidation.
+
+    ``field`` is e.g. ``"num_ctx"``; new override fields (supports_tools,
+    keep_alive, ...) reuse this same lookup without touching the surrounding
+    discovery/cache logic."""
     target = _normalize_base_for_compare(endpoint_url)
     if not target:
         return None
@@ -109,7 +114,7 @@ def _configured_context_override(endpoint_url: str, model: str) -> Optional[int]
                     continue
                 if target != base and not target.startswith(base + "/"):
                     continue
-                raw = getattr(ep, "context_overrides", None)
+                raw = getattr(ep, "model_overrides", None)
                 if not raw:
                     continue
                 try:
@@ -118,23 +123,32 @@ def _configured_context_override(endpoint_url: str, model: str) -> Optional[int]
                     continue
                 if not isinstance(overrides, dict):
                     continue
-                value = overrides.get(model)
-                if value is None:
+                fields = overrides.get(model)
+                if fields is None:
                     # Catalog ids may carry a provider prefix (e.g. "openai/gpt-4o")
                     # while the session stores the bare id; match the trailing
                     # segment too so the override still applies either way.
                     base_model = model.split("/")[-1]
                     for key, val in overrides.items():
                         if key.split("/")[-1] == base_model:
-                            value = val
+                            fields = val
                             break
-                if isinstance(value, (int, float)) and value > 0:
-                    return int(value)
+                if isinstance(fields, dict) and field in fields:
+                    return fields[field]
             return None
         finally:
             db.close()
     except Exception:
         return None
+
+
+def _configured_context_override(endpoint_url: str, model: str) -> Optional[int]:
+    """Admin-set per-model ``num_ctx`` override. Thin wrapper over
+    ``_configured_model_override`` — see that function for the storage shape."""
+    value = _configured_model_override(endpoint_url, model, "num_ctx")
+    if isinstance(value, (int, float)) and value > 0:
+        return int(value)
+    return None
 
 
 def is_local_endpoint(url: str) -> bool:

@@ -1267,17 +1267,26 @@ def _merge_model_ids(*lists):
     return out
 
 
-# Admin-forced num_ctx bounds. The floor rejects a negative/invalid value
-# (0 already clears the override earlier); the ceiling clamps an obvious typo
-# (e.g. an extra trailing zero turning 32768 into 327680000) down to a value
-# generous enough for any current long-context model.
-_CONTEXT_OVERRIDE_MIN = 1
-_CONTEXT_OVERRIDE_MAX = 10_000_000
+# Per-model override fields. Each entry is {field: (validate(value) -> cleaned
+# value or None)}. Adding a new overridable field (e.g. supports_tools,
+# keep_alive) is a one-line registration here plus a UI input in admin.js —
+# the storage/merge/API shape below is generic and doesn't need to change.
+def _validate_num_ctx(value: Any) -> Optional[int]:
+    # Floor rejects a negative/invalid value; the ceiling clamps an obvious
+    # typo (e.g. an extra trailing zero turning 32768 into 327680000) down to
+    # a value generous enough for any current long-context model.
+    return _parse_positive_int(value, minimum=1, maximum=10_000_000)
 
 
-def _context_overrides(ep: Any) -> Dict[str, int]:
-    """Parse the {model_id: num_ctx} JSON blob stored on a ModelEndpoint row."""
-    raw = getattr(ep, "context_overrides", None)
+_OVERRIDE_FIELD_VALIDATORS: Dict[str, Any] = {
+    "num_ctx": _validate_num_ctx,
+}
+
+
+def _model_overrides(ep: Any) -> Dict[str, Dict[str, Any]]:
+    """Parse the {model_id: {field: value}} JSON blob stored on a
+    ModelEndpoint row, dropping unknown fields and invalid values."""
+    raw = getattr(ep, "model_overrides", None)
     if not raw:
         return {}
     try:
@@ -1286,22 +1295,27 @@ def _context_overrides(ep: Any) -> Dict[str, int]:
         return {}
     if not isinstance(parsed, dict):
         return {}
-    out: Dict[str, int] = {}
-    for k, v in parsed.items():
-        if not isinstance(k, str) or not k:
+    out: Dict[str, Dict[str, Any]] = {}
+    for model_id, fields in parsed.items():
+        if not isinstance(model_id, str) or not model_id or not isinstance(fields, dict):
             continue
-        try:
-            n = int(v)
-        except Exception:
-            continue
-        if _CONTEXT_OVERRIDE_MIN <= n <= _CONTEXT_OVERRIDE_MAX:
-            out[k] = n
+        clean: Dict[str, Any] = {}
+        for field, value in fields.items():
+            validator = _OVERRIDE_FIELD_VALIDATORS.get(field)
+            if validator is None:
+                continue
+            validated = validator(value)
+            if validated is not None:
+                clean[field] = validated
+        if clean:
+            out[model_id] = clean
     return out
 
 
 def _is_mlx_deepseek_v4_repo_id(model_id: str) -> bool:
     m = str(model_id or "").lower()
     return "mlx-community/deepseek-v4" in m
+
 
 
 def _is_mlx_deepseek_v4_shim_id(model_id: str) -> bool:
@@ -2376,7 +2390,7 @@ def setup_model_routes(model_discovery):
                     response.headers["X-Model-Refresh-Warning"] = "Model refresh failed or returned no models; kept cached models."
             _, pinned = _picker_models_for_endpoint(ep, base, kind)
             pinned_set = set(pinned)
-            overrides = _context_overrides(ep)
+            overrides = _model_overrides(ep)
             return [
                 {
                     "id": m,
@@ -2384,7 +2398,7 @@ def setup_model_routes(model_discovery):
                     "is_hidden": m in hidden,
                     "is_pinned": m in pinned_set,
                     "picker_requires_pinning": picker_requires_pinning,
-                    "context_override": overrides.get(m),
+                    "overrides": overrides.get(m, {}),
                 }
                 for m in _merge_model_ids(all_models, pinned)
             ]
@@ -2435,22 +2449,38 @@ def setup_model_routes(model_discovery):
                     ep.hidden_models = None
                 else:
                     ep.pinned_models = json.dumps(pinned) if pinned else None
-            if "context_overrides" in body:
-                patch = body.get("context_overrides")
+            if "overrides" in body:
+                patch = body.get("overrides")
                 if not isinstance(patch, dict):
-                    raise HTTPException(400, "context_overrides must be an object of {model_id: num_ctx}")
-                overrides = _context_overrides(ep)
-                for model_id, value in patch.items():
+                    raise HTTPException(400, "overrides must be an object of {model_id: {field: value}}")
+                overrides = _model_overrides(ep)
+                for model_id, fields in patch.items():
                     if not isinstance(model_id, str) or not model_id:
                         continue
-                    if value in (None, "", 0):
+                    if fields is None:
+                        # Whole model entry cleared in one shot.
                         overrides.pop(model_id, None)
                         continue
-                    n = _parse_positive_int(value, minimum=_CONTEXT_OVERRIDE_MIN, maximum=_CONTEXT_OVERRIDE_MAX)
-                    if n is None:
-                        raise HTTPException(400, f"context_overrides[{model_id!r}] must be a positive integer")
-                    overrides[model_id] = n
-                ep.context_overrides = json.dumps(overrides) if overrides else None
+                    if not isinstance(fields, dict):
+                        raise HTTPException(400, f"overrides[{model_id!r}] must be an object of {{field: value}}")
+                    current = dict(overrides.get(model_id, {}))
+                    for field, value in fields.items():
+                        validator = _OVERRIDE_FIELD_VALIDATORS.get(field)
+                        if validator is None:
+                            raise HTTPException(400, f"Unknown override field {field!r}")
+                        if value is None:
+                            # Null clears just this one field.
+                            current.pop(field, None)
+                            continue
+                        validated = validator(value)
+                        if validated is None:
+                            raise HTTPException(400, f"overrides[{model_id!r}][{field!r}] is invalid")
+                        current[field] = validated
+                    if current:
+                        overrides[model_id] = current
+                    else:
+                        overrides.pop(model_id, None)
+                ep.model_overrides = json.dumps(overrides) if overrides else None
             db.commit()
             _invalidate_models_cache()
             hidden_count = len(json.loads(ep.hidden_models)) if ep.hidden_models else 0
@@ -2459,7 +2489,7 @@ def setup_model_routes(model_discovery):
                 "id": ep_id,
                 "hidden_count": hidden_count,
                 "pinned_count": pinned_count,
-                "context_overrides": _context_overrides(ep),
+                "overrides": _model_overrides(ep),
             }
         finally:
             db.close()

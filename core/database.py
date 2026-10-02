@@ -538,11 +538,14 @@ class ModelEndpoint(TimestampMixin, Base):
     model_refresh_mode = Column(String, nullable=True, default="auto")
     model_refresh_interval = Column(Integer, nullable=True, default=None)
     model_refresh_timeout = Column(Integer, nullable=True, default=None)
-    # JSON dict of {model_id: num_ctx} manual per-model context-window overrides.
-    # Lets an admin force the context size (e.g. Ollama's num_ctx) for a specific
-    # model instead of relying on auto-discovery / the known-models table, which
-    # can't see server-side defaults like Ollama's VRAM-based 4k/32k/256k picks.
-    context_overrides = Column(Text, nullable=True)
+    # JSON dict of {model_id: {field: value}} manual per-model overrides (e.g.
+    # {"qwen3:14b": {"num_ctx": 32768}}). Lets an admin force a value odysseus
+    # can't otherwise see or infer for a *specific* model on this endpoint —
+    # e.g. Ollama's num_ctx, where the server picks a VRAM-based 4k/32k/256k
+    # default odysseus has no way to discover. New override fields are added
+    # by registering a validator in routes/model_routes.py's
+    # _OVERRIDE_FIELD_VALIDATORS; the storage/merge/API shape here is generic.
+    model_overrides = Column(Text, nullable=True)
     # Whether models on this endpoint accept OpenAI-style function
     # schemas + emit `tool_calls`. Auto-detected at Cookbook auto-
     # register time from `--enable-auto-tool-choice` in the serve cmd;
@@ -1110,6 +1113,36 @@ def _migrate_add_model_endpoint_refresh_columns():
             conn.execute("ALTER TABLE model_endpoints ADD COLUMN model_refresh_timeout INTEGER")
         if columns and "context_overrides" not in columns:
             conn.execute("ALTER TABLE model_endpoints ADD COLUMN context_overrides TEXT")
+        if columns and "model_overrides" not in columns:
+            conn.execute("ALTER TABLE model_endpoints ADD COLUMN model_overrides TEXT")
+            # Backfill from the older flat {model_id: num_ctx} shape into the
+            # new generic {model_id: {field: value}} shape so overrides saved
+            # before this rename (Settings > Added Models) survive it.
+            if "context_overrides" in columns:
+                import json as _json
+                try:
+                    rows = conn.execute(
+                        "SELECT id, context_overrides FROM model_endpoints WHERE context_overrides IS NOT NULL"
+                    ).fetchall()
+                    for ep_id, raw in rows:
+                        try:
+                            flat = _json.loads(raw)
+                        except Exception:
+                            continue
+                        if not isinstance(flat, dict):
+                            continue
+                        nested = {
+                            k: {"num_ctx": int(v)}
+                            for k, v in flat.items()
+                            if isinstance(v, (int, float)) and v > 0
+                        }
+                        if nested:
+                            conn.execute(
+                                "UPDATE model_endpoints SET model_overrides = ? WHERE id = ?",
+                                (_json.dumps(nested), ep_id),
+                            )
+                except Exception as e:
+                    logging.getLogger(__name__).warning(f"model_overrides backfill failed: {e}")
         conn.commit()
     except Exception as e:
         logging.getLogger(__name__).warning(f"model_endpoints refresh-policy migration failed: {e}")

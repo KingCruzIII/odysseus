@@ -37,7 +37,12 @@ emits `options.num_ctx` when `src.model_context.get_context_length` returned a
 trusted (non-default) value, so Ollama server defaults (VRAM-based 4k/32k/256k)
 stand for any model odysseus can't positively size — fixable server-side via
 `OLLAMA_CONTEXT_LENGTH`/a Modelfile `num_ctx`, or per-model from Settings >
-Models' context override field (see `specs/llm-models.md`).
+Added Models' per-model override fields (see `specs/llm-models.md`). This only
+applies through the native `/api/chat` dialect: Ollama's OpenAI-compatible
+`/v1/chat/completions` request struct has no `num_ctx`/options field at all, so
+an endpoint registered with a `/v1` base URL silently drops any such override
+regardless of what odysseus sends — the endpoint must be registered at the
+bare host:port for per-model context overrides to have any effect.
 
 Manual Ollama endpoints registered against the OpenAI-compatible `/v1` surface default to text/prompted tools unless the operator explicitly enables `supports_tools`; model naming alone does not opt that dialect into native function schemas.
 

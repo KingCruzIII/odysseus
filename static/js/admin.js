@@ -720,7 +720,7 @@ async function loadEndpoints() {
                 <input type="checkbox" class="adm-cb-hidden" data-ep-model-id="${esc(m.id)}" ${(usesPinnedPicker ? m.is_pinned : !m.is_hidden) ? 'checked' : ''}>
                 <span class="adm-check-dot" aria-hidden="true"></span>
                 <span>${esc(m.display)}</span>
-                <input type="number" min="1" step="1" class="adm-ctx-input" data-ep-model-ctx="${esc(m.id)}" placeholder="ctx" title="Override context length (num_ctx) for this model — blank uses auto-detection" value="${m.context_override ? Number(m.context_override) : ''}">
+                <input class="adm-override-input" data-ep-override-model="${esc(m.id)}" data-ep-override-field="num_ctx" placeholder="ctx" title="Override context length (num_ctx) for this model — blank uses auto-detection" value="${(m.overrides && m.overrides.num_ctx) ? Number(m.overrides.num_ctx) : ''}">
               </label>`
             ).join('') + '</div>';
             const filterRows = (q) => {
@@ -748,14 +748,14 @@ async function loadEndpoints() {
             panel.querySelectorAll('input[type=checkbox]').forEach(cb => {
               cb.addEventListener('change', () => _saveEpModelState(epId, panel));
             });
-            panel.querySelectorAll('[data-ep-model-ctx]').forEach(inp => {
-              // Clicking/typing in the number input must not toggle the row's
-              // checkbox (both live inside the same <label>).
+            panel.querySelectorAll('[data-ep-override-model]').forEach(inp => {
+              // Clicking/typing in the override input must not toggle the
+              // row's checkbox (both live inside the same <label>).
               inp.addEventListener('click', (e) => e.stopPropagation());
               inp.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') inp.blur();
               });
-              inp.addEventListener('change', () => _saveModelContextOverride(epId, inp));
+              inp.addEventListener('change', () => _saveModelOverride(epId, inp));
             });
           };
           try {
@@ -808,10 +808,16 @@ async function _saveEpModelState(epId, panel) {
   } catch (e) { /* silent */ }
 }
 
-async function _saveModelContextOverride(epId, inputEl) {
-  const modelId = inputEl.dataset.epModelCtx;
+// Human-readable label per override field, used only for toast text; new
+// fields default to their raw field name if not listed here.
+const _OVERRIDE_FIELD_LABELS = { num_ctx: 'Context override' };
+
+async function _saveModelOverride(epId, inputEl) {
+  const modelId = inputEl.dataset.epOverrideModel;
+  const field = inputEl.dataset.epOverrideField;
+  const label = _OVERRIDE_FIELD_LABELS[field] || field;
   const raw = inputEl.value.trim();
-  // Empty clears the override (falls back to auto-detection); otherwise send
+  // Empty clears the field (falls back to auto-detection); otherwise send
   // the parsed integer so a stray "32,768"-style paste still saves cleanly.
   const value = raw === '' ? null : parseInt(raw.replace(/[^\d]/g, ''), 10) || null;
   inputEl.value = value || '';
@@ -820,14 +826,14 @@ async function _saveModelContextOverride(epId, inputEl) {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ context_overrides: { [modelId]: value } }),
+      body: JSON.stringify({ overrides: { [modelId]: { [field]: value } } }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     if (uiModule?.showToast) {
-      uiModule.showToast(value ? `Context override set to ${value.toLocaleString()}` : 'Context override cleared', 2500);
+      uiModule.showToast(value ? `${label} set to ${value.toLocaleString()}` : `${label} cleared`, 2500);
     }
   } catch (e) {
-    if (uiModule?.showToast) uiModule.showToast('Failed to save context override', 4000);
+    if (uiModule?.showToast) uiModule.showToast(`Failed to save ${label.toLowerCase()}`, 4000);
   }
 }
 

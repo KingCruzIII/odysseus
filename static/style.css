@@ -15250,10 +15250,11 @@ body:has(.doc-version-panel:not(.hidden)) .hamburger-btn {
 .adm-cb-hidden:checked + .adm-check-dot::after {
   transform: translate(-50%, -50%) rotate(-45deg) scale(1);
 }
-/* Per-model num_ctx override field on each Models row. Fixed-width so a
-   7-figure context value doesn't reflow the row; the shared label's
-   `flex: 1` on the display-name span keeps this pinned to the right. */
-.adm-ctx-input {
+/* Per-model override field (num_ctx today; future fields like keep_alive
+   reuse this same class) on each Models row. Fixed-width so a 7-figure
+   value doesn't reflow the row; the shared label's `flex: 1` on the
+   display-name span keeps this pinned to the right. */
+.adm-override-input {
   flex: 0 0 56px !important;
   width: 56px;
   font-size: 10px;
@@ -15263,8 +15264,17 @@ body:has(.doc-version-panel:not(.hidden)) .hamburger-btn {
   background: color-mix(in srgb, var(--fg) 4%, transparent);
   color: var(--fg);
   text-align: right;
+  /* Hide the native number-input spinner — it eats into the already-tight
+     56px width and serves no purpose for a context-size field. */
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
-.adm-ctx-input:focus {
+.adm-override-input::-webkit-outer-spin-button,
+.adm-override-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.adm-override-input:focus {
   outline: none;
   border-color: var(--accent, var(--red));
 }
