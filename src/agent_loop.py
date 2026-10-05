@@ -19,6 +19,7 @@ from src.llm_core import (
     dedupe_model_candidates,
     stream_llm,
     stream_llm_with_fallback,
+    _ollama_advertises_tool_support,
     _is_ollama_native_url,
     _normalize_http_status,
     _normalize_usage_counts,
@@ -1058,12 +1059,15 @@ def _agent_route_tool_mode(
     ollama_openai_compat = _is_ollama_openai_compat_url(endpoint_url or "")
     if endpoint_supports is True:
         is_api_model = True
-    elif (
-        endpoint_supports is False
-        or model_no_tools
-        or is_ollama_native
-        or ollama_openai_compat
-    ):
+    elif endpoint_supports is False or model_no_tools:
+        is_api_model = False
+    elif is_ollama_native:
+        is_api_model = _ollama_advertises_tool_support(
+            endpoint_url,
+            model,
+            headers,
+        )
+    elif ollama_openai_compat:
         is_api_model = False
     else:
         is_api_model = any(host in endpoint_url for host in _API_HOSTS) or model_supports_tools

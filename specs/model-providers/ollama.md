@@ -46,6 +46,13 @@ bare host:port for per-model context overrides to have any effect.
 
 Manual Ollama endpoints registered against the OpenAI-compatible `/v1` surface default to text/prompted tools unless the operator explicitly enables `supports_tools`; model naming alone does not opt that dialect into native function schemas.
 
+For native `/api` endpoints, when no endpoint-level `supports_tools` override
+exists, Odysseus reads the selected model's `POST /api/show` capabilities and
+enables native schemas only when Ollama advertises `tools`. This is per model,
+not per server: a single Ollama instance can host both tool-capable and
+text-only models. Explicit endpoint `true`/`false` overrides remain
+authoritative.
+
 Thinking control is model-specific: most documented reasoning families accept
 a native bool, while GPT-OSS accepts low/medium/high and cannot be fully
 disabled. A reported Ollama 0.20.6 Qwen3.5 OpenAI-compat path requires
@@ -54,7 +61,11 @@ and low-confidence until corroborated.
 
 ## Fallback And Safety
 
-Current reader detection identifies port 11434 as Ollama, in addition to an explicit endpoint kind or an exact/label-bounded `ollama.com` hostname. This is a normalization hint, not endpoint trust or capability evidence. Names that contain `vision`, `embed`, or `qwen` are not capability evidence (#3743, #4487).
+Current reader detection identifies port 11434 as Ollama, an explicit native
+`/api` path, or an exact/label-bounded `ollama.com` hostname. This is a
+normalization hint, not endpoint trust or capability evidence. Names that
+contain `vision`, `embed`, or `qwen` are not capability evidence (#3743,
+#4487).
 
 ## Current Gaps
 

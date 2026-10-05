@@ -571,6 +571,11 @@ def _is_ollama_native_url(url: str) -> bool:
         return True
     if path.startswith("/v1"):
         return False
+    # A remote Ollama server is commonly exposed through a hostname or reverse
+    # proxy rather than port 11434.  An explicit native /api path is enough to
+    # distinguish it from the OpenAI-compatible /v1 surface.
+    if path == "/api" or path.startswith("/api/"):
+        return True
     local_ollama_host = host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or parsed.port == 11434
     return local_ollama_host and (path == "" or path == "/api" or path.startswith("/api/"))
 
@@ -765,6 +770,64 @@ def _build_ollama_payload(
     if tools:
         payload["tools"] = _alias_harmony_tools(tools, model)
     return payload
+
+
+_ollama_tool_support_cache: dict[tuple[str, str], bool] = {}
+
+
+def _ollama_advertises_tool_support(
+    url: str,
+    model: str,
+    headers: Optional[Dict] = None,
+) -> bool:
+    """Return whether native Ollama advertises tool calls for ``model``.
+
+    Ollama exposes model-level capabilities through ``POST /api/show``.  Tool
+    support cannot be inferred safely from the server endpoint: one Ollama
+    instance can host both capable and incapable models.  Reuse the canonical
+    Ollama capability reader so the runtime gate and capability metadata use
+    the same interpretation of the provider response.
+    """
+    model = (model or "").strip()
+    if not model:
+        return False
+    cache_key = (_ollama_api_root(url), model)
+    cached = _ollama_tool_support_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    request_headers = {"Content-Type": "application/json"}
+    if headers:
+        request_headers.update(headers)
+    show_url = cache_key[0].rstrip("/") + "/show"
+    try:
+        response = httpx.post(
+            show_url,
+            headers=request_headers,
+            json={"model": model},
+            timeout=5,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.info(
+            "Could not read Ollama model capabilities for %s at %s: %s",
+            model,
+            show_url,
+            exc,
+        )
+        return False
+
+    from src import model_capabilities as model_capabilities
+    from src.model_capability_readers.ollama import record_from_show_payload
+
+    record = record_from_show_payload(model, payload)
+    supports_tools = bool(
+        record
+        and model_capabilities.CAP_TOOL_CALL in record.capability.capabilities
+    )
+    _ollama_tool_support_cache[cache_key] = supports_tools
+    return supports_tools
 
 
 def _parse_ollama_response(data: dict) -> str:

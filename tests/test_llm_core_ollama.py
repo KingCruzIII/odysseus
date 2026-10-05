@@ -15,6 +15,82 @@ def test_detects_bare_local_ollama_as_native_provider():
     assert llm_core._detect_provider("http://localhost:11434/v1") == "openai"
 
 
+def test_detects_remote_native_ollama_api_path():
+    assert llm_core._detect_provider("https://ollama.example.test/api") == "ollama"
+    assert llm_core._detect_provider("https://ollama.example.test/api/chat") == "ollama"
+
+
+def test_ollama_show_capabilities_enable_native_tools(monkeypatch):
+    seen = {}
+    llm_core._ollama_tool_support_cache.clear()
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        seen.update(url=url, headers=headers, json=json, timeout=timeout)
+        request = httpx.Request("POST", url)
+        return httpx.Response(
+            200,
+            request=request,
+            json={"capabilities": ["completion", "tools"]},
+        )
+
+    monkeypatch.setattr(llm_core.httpx, "post", fake_post)
+
+    assert llm_core._ollama_advertises_tool_support(
+        "https://ollama.example.test/api",
+        "granite4.1:8b",
+        {"Authorization": "Bearer token"},
+    )
+    assert seen == {
+        "url": "https://ollama.example.test/api/show",
+        "headers": {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer token",
+        },
+        "json": {"model": "granite4.1:8b"},
+        "timeout": 5,
+    }
+
+
+def test_ollama_show_without_tools_keeps_native_tools_disabled(monkeypatch):
+    llm_core._ollama_tool_support_cache.clear()
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        request = httpx.Request("POST", url)
+        return httpx.Response(
+            200,
+            request=request,
+            json={"capabilities": ["completion"]},
+        )
+
+    monkeypatch.setattr(llm_core.httpx, "post", fake_post)
+
+    assert not llm_core._ollama_advertises_tool_support(
+        "http://remote-ollama:11434/api",
+        "text-only:latest",
+    )
+
+
+def test_native_ollama_payload_includes_function_schemas():
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "get_workspace",
+            "description": "Returns the current workspace directory.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }]
+
+    payload = llm_core._build_ollama_payload(
+        "granite4.1:8b",
+        [{"role": "user", "content": "Call get_workspace."}],
+        temperature=0.0,
+        max_tokens=32,
+        tools=tools,
+    )
+
+    assert payload["tools"] == tools
+
+
 def test_llm_call_posts_native_ollama_payload(monkeypatch):
     seen = {}
 

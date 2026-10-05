@@ -9,6 +9,7 @@ Verifies two critical cases:
 from types import SimpleNamespace
 
 import pytest
+import src.agent_loop as agent_loop
 from src.agent_loop import (
     _API_HOSTS,
     _agent_route_tool_mode,
@@ -158,6 +159,42 @@ class TestApiHostsContainsDeepSeek:
 
     def test_deepseek_com_in_api_hosts(self):
         assert "deepseek.com" in _API_HOSTS
+
+
+def test_native_ollama_uses_model_advertised_tool_support(monkeypatch):
+    seen = {}
+
+    def advertised(url, model, headers):
+        seen.update(url=url, model=model, headers=headers)
+        return True
+
+    monkeypatch.setattr(agent_loop, "_ollama_advertises_tool_support", advertised)
+
+    is_api_model, is_ollama_native, _ = _agent_route_tool_mode(
+        "https://ollama.example.test/api",
+        "granite4.1:8b",
+        headers={"Authorization": "Bearer token"},
+    )
+
+    assert is_api_model is True
+    assert is_ollama_native is True
+    assert seen == {
+        "url": "https://ollama.example.test/api",
+        "model": "granite4.1:8b",
+        "headers": {"Authorization": "Bearer token"},
+    }
+
+
+def test_native_ollama_without_advertised_tool_support_stays_non_native(monkeypatch):
+    monkeypatch.setattr(agent_loop, "_ollama_advertises_tool_support", lambda *args: False)
+
+    is_api_model, is_ollama_native, _ = _agent_route_tool_mode(
+        "http://remote-ollama:11434/api",
+        "text-only:latest",
+    )
+
+    assert is_api_model is False
+    assert is_ollama_native is True
 
 
 class TestEndpointLookupKeys:
